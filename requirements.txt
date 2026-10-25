@@ -8,6 +8,7 @@ langchain>=0.3,<0.4
 langchain-core>=0.3,<0.4
 langchain-community>=0.3,<0.4
 langchain-openai>=0.3,<0.4
+langchain-ollama>=0.2,<1.0   # free local models via Ollama (LLM_PROVIDER=ollama)
 langchain-text-splitters>=0.3,<0.4
 langchain-postgres>=0.0.13,<0.1
 

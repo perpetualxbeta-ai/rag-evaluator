@@ -10,7 +10,6 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,7 +18,6 @@ import pandas as pd
 from dotenv import load_dotenv
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_openai import ChatOpenAI
 from ragas import EvaluationDataset, evaluate
 from ragas.embeddings import LangchainEmbeddingsWrapper
 from ragas.llms import LangchainLLMWrapper
@@ -33,18 +31,21 @@ from ragas.run_config import RunConfig
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from src.indexer import (  # noqa: E402
-    COLLECTION_NAME,
+from src.indexer import COLLECTION_NAME, get_vector_store  # noqa: E402
+from src.models import (  # noqa: E402
+    DEFAULT_MAX_WORKERS,
+    EMBEDDING_MODEL,
+    JUDGE_MODEL,
+    PROVIDER,
+    RAG_MODEL,
+    REQUEST_TIMEOUT,
+    check_provider,
+    get_chat_model,
     get_embeddings,
-    get_vector_store,
-    require_openai_key,
 )
 
 load_dotenv()
 logger = logging.getLogger(__name__)
-
-RAG_MODEL = os.getenv("RAG_MODEL", "gpt-4o-mini")
-JUDGE_MODEL = os.getenv("JUDGE_MODEL", "gpt-4o")
 
 RAG_PROMPT = ChatPromptTemplate.from_messages(
     [
@@ -82,7 +83,7 @@ def run_rag(
     retrieved = retriever.batch(questions, config=cfg)
     contexts = [[doc.page_content for doc in docs] for docs in retrieved]
 
-    chain = RAG_PROMPT | ChatOpenAI(model=model, temperature=0) | StrOutputParser()
+    chain = RAG_PROMPT | get_chat_model(model) | StrOutputParser()
     inputs = [
         {"question": q, "context": "\n\n---\n\n".join(ctx)} for q, ctx in zip(questions, contexts)
     ]
@@ -96,10 +97,10 @@ def evaluate_pipeline(
     rag_model: str = RAG_MODEL,
     judge_model: str = JUDGE_MODEL,
     collection_name: str = COLLECTION_NAME,
-    max_concurrency: int = 8,
+    max_concurrency: int = DEFAULT_MAX_WORKERS,
     output_dir: str | Path = ROOT / "eval" / "results",
 ) -> pd.DataFrame:
-    require_openai_key()
+    check_provider(rag_model, judge_model, EMBEDDING_MODEL)
     testset = load_testset(testset_path)
     questions = testset["user_input"].tolist()
     logger.info("Running RAG pipeline on %d questions (k=%d, model=%s)", len(questions), k, rag_model)
@@ -128,9 +129,11 @@ def evaluate_pipeline(
     result = evaluate(
         dataset=dataset,
         metrics=metrics,
-        llm=LangchainLLMWrapper(ChatOpenAI(model=judge_model, temperature=0)),
+        llm=LangchainLLMWrapper(get_chat_model(judge_model)),
         embeddings=LangchainEmbeddingsWrapper(get_embeddings()),
-        run_config=RunConfig(max_workers=max_concurrency, timeout=180, max_retries=10),
+        run_config=RunConfig(
+            max_workers=max_concurrency, timeout=REQUEST_TIMEOUT, max_retries=10
+        ),
         show_progress=True,
     )
 
@@ -146,7 +149,8 @@ def evaluate_pipeline(
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "testset": str(testset_path),
         "n_samples": len(results_df),
-        "config": {"k": k, "rag_model": rag_model, "judge_model": judge_model,
+        "config": {"provider": PROVIDER, "k": k, "rag_model": rag_model,
+                   "judge_model": judge_model, "embedding_model": EMBEDDING_MODEL,
                    "collection": collection_name},
         "scores": {c: float(results_df[c].mean()) for c in metric_cols},
         "nan_counts": {c: int(results_df[c].isna().sum()) for c in metric_cols},
@@ -176,7 +180,7 @@ def main() -> None:
     parser.add_argument("--rag-model", default=RAG_MODEL)
     parser.add_argument("--judge-model", default=JUDGE_MODEL)
     parser.add_argument("--collection", default=COLLECTION_NAME)
-    parser.add_argument("--max-concurrency", type=int, default=8)
+    parser.add_argument("--max-concurrency", type=int, default=DEFAULT_MAX_WORKERS)
     parser.add_argument("--output-dir", default=str(ROOT / "eval" / "results"))
     args = parser.parse_args()
 

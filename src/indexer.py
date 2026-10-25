@@ -20,9 +20,10 @@ from dotenv import load_dotenv
 from langchain_community.document_loaders import DirectoryLoader, TextLoader
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
-from langchain_openai import OpenAIEmbeddings
 from langchain_postgres import PGVector
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+
+from src.models import EMBEDDING_MODEL, PROVIDER, check_provider, get_embeddings
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -30,8 +31,9 @@ logger = logging.getLogger(__name__)
 DATABASE_URL = os.getenv(
     "DATABASE_URL", "postgresql+psycopg://postgres:postgres@localhost:5432/rag"
 )
-COLLECTION_NAME = os.getenv("PGVECTOR_COLLECTION", "rag_eval")
-EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
+# Embeddings from different providers have different dimensions and can't share a
+# collection, so the default name includes the provider.
+COLLECTION_NAME = os.getenv("PGVECTOR_COLLECTION") or f"rag_eval_{PROVIDER}"
 DEFAULT_GLOBS: tuple[str, ...] = ("**/*.md", "**/*.txt")
 
 # Stable namespace so the same chunk always gets the same ID (idempotent re-indexing).
@@ -41,11 +43,6 @@ _CHUNK_NAMESPACE = uuid.UUID("6f1c2a9e-3b7d-4e2a-9c51-8a0d4f7e2b13")
 # --------------------------------------------------------------------------- #
 # Shared helpers (also imported by eval/ scripts)
 # --------------------------------------------------------------------------- #
-def get_embeddings() -> Embeddings:
-    """Single source of truth for the embedding model used at index *and* query time."""
-    return OpenAIEmbeddings(model=EMBEDDING_MODEL)
-
-
 def get_vector_store(
     collection_name: str = COLLECTION_NAME,
     url: str = DATABASE_URL,
@@ -67,16 +64,6 @@ def _libpq_dsn(url: str) -> str:
         if url.startswith(prefix):
             return "postgresql://" + url[len(prefix):]
     return url
-
-
-def require_openai_key() -> None:
-    """Fail fast with a readable message instead of a deep OpenAI client traceback."""
-    key = os.getenv("OPENAI_API_KEY", "")
-    if not key or key == "sk-...":
-        raise SystemExit(
-            "OPENAI_API_KEY is not set. Copy .env.example to .env in the repo root "
-            "and put your key on the OPENAI_API_KEY line (or export it in your shell)."
-        )
 
 
 def ensure_database(url: str = DATABASE_URL) -> None:
@@ -195,7 +182,7 @@ def index_documents(
     batch_size: int = 128,
     reset: bool = False,
 ) -> int:
-    require_openai_key()
+    check_provider(EMBEDDING_MODEL)
     ensure_pgvector_extension()
     chunks = chunk_documents(load_documents(data_dir), chunk_size, chunk_overlap)
     if not chunks:

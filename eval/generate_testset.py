@@ -7,14 +7,12 @@ from __future__ import annotations
 
 import argparse
 import logging
-import os
 import sys
 from pathlib import Path
 
 import pandas as pd
 from datasets import Dataset
 from dotenv import load_dotenv
-from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from ragas.embeddings import LangchainEmbeddingsWrapper
 from ragas.llms import LangchainLLMWrapper
 from ragas.run_config import RunConfig
@@ -22,12 +20,20 @@ from ragas.testset import TestsetGenerator
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from src.indexer import EMBEDDING_MODEL, load_documents, require_openai_key  # noqa: E402
+from src.indexer import load_documents  # noqa: E402
+from src.models import (  # noqa: E402
+    DEFAULT_MAX_WORKERS,
+    EMBEDDING_MODEL,
+    GENERATOR_MODEL,
+    PROVIDER,
+    REQUEST_TIMEOUT,
+    check_provider,
+    get_chat_model,
+    get_embeddings,
+)
 
 load_dotenv()
 logger = logging.getLogger(__name__)
-
-GENERATOR_MODEL = os.getenv("GENERATOR_MODEL", "gpt-4o-mini")
 
 
 def generate_testset(
@@ -36,25 +42,25 @@ def generate_testset(
     output_path: str | Path = ROOT / "eval" / "data" / "testset.jsonl",
     hf_dir: str | Path | None = None,
     generator_model: str = GENERATOR_MODEL,
-    embedding_model: str = EMBEDDING_MODEL,
-    max_workers: int = 8,
+    max_workers: int = DEFAULT_MAX_WORKERS,
 ) -> pd.DataFrame:
-    require_openai_key()
+    check_provider(generator_model, EMBEDDING_MODEL)
     # Use full documents, not our chunks: Ragas builds its own knowledge graph
     # and the test set should be independent of the chunking under evaluation.
     docs = load_documents(data_dir)
     if not docs:
         raise ValueError(f"No documents found in {data_dir}")
 
-    generator_llm = LangchainLLMWrapper(ChatOpenAI(model=generator_model, temperature=0))
-    generator_embeddings = LangchainEmbeddingsWrapper(OpenAIEmbeddings(model=embedding_model))
+    logger.info("Generating %d samples with %s (%s)", testset_size, generator_model, PROVIDER)
+    generator_llm = LangchainLLMWrapper(get_chat_model(generator_model))
+    generator_embeddings = LangchainEmbeddingsWrapper(get_embeddings())
 
     generator = TestsetGenerator(llm=generator_llm, embedding_model=generator_embeddings)
 
     testset = generator.generate_with_langchain_docs(
         docs,
         testset_size=testset_size,
-        run_config=RunConfig(max_workers=max_workers, timeout=180, max_retries=10),
+        run_config=RunConfig(max_workers=max_workers, timeout=REQUEST_TIMEOUT, max_retries=10),
     )
 
     df = testset.to_pandas()
@@ -86,7 +92,7 @@ def main() -> None:
     parser.add_argument("--output", default=str(ROOT / "eval" / "data" / "testset.jsonl"))
     parser.add_argument("--hf-dir", default=None, help="Optional: also save as a HF dataset")
     parser.add_argument("--model", default=GENERATOR_MODEL)
-    parser.add_argument("--max-workers", type=int, default=8)
+    parser.add_argument("--max-workers", type=int, default=DEFAULT_MAX_WORKERS)
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")

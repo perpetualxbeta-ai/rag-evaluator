@@ -27,9 +27,34 @@ The test set is generated from the **raw documents**, not from your chunks. That
 
 ## Requirements
 
-- Python 3.10+
+- Python 3.10–3.13
 - Docker (or any Postgres 14+ with the `vector` extension available)
-- An OpenAI API key
+- **Either** [Ollama](https://ollama.com) for free local models, **or** an OpenAI API key
+
+## Choosing a model provider
+
+Set `LLM_PROVIDER` in `.env`:
+
+| | `ollama` (default in `.env.example`) | `openai` |
+|---|---|---|
+| Cost | Free, runs on your machine | Pay per use (a 10-question run is well under $1) |
+| Setup | Install Ollama and pull two models | API key from platform.openai.com |
+| Speed | Minutes per run on a laptop | Fast, runs in parallel |
+| Score reliability | Lower: small judges are noisier and sometimes produce unparseable output (`NaN` scores) | Higher |
+
+Ollama is good for trying the repo and for iterating on chunking. For scores you'll report or compare over time, use a strong judge model.
+
+Each provider gets its own pgvector collection (`rag_eval_ollama`, `rag_eval_openai`), because their embeddings have different dimensions. Switching providers never mixes indexes. Re-run the indexer after switching.
+
+### Ollama setup
+
+1. Install Ollama from [ollama.com](https://ollama.com) (on macOS: `brew install ollama`, or download the app) and start it.
+2. Pull the default models (about 5 GB in total):
+   ```bash
+   ollama pull qwen2.5:7b
+   ollama pull nomic-embed-text
+   ```
+   On a machine with 8 GB of RAM, use a smaller model instead, e.g. `ollama pull llama3.2:3b`, and set `GENERATOR_MODEL`, `RAG_MODEL` and `JUDGE_MODEL` to it in `.env`.
 
 ## Setup
 
@@ -40,18 +65,18 @@ cd rag-evaluator
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
-cp .env.example .env   # then fill in OPENAI_API_KEY
+cp .env.example .env   # set LLM_PROVIDER, and OPENAI_API_KEY if using OpenAI
 ```
 
-Start Postgres with pgvector:
+Start Postgres with pgvector (on port 5433, to avoid clashing with any other Postgres on your machine):
 
 ```bash
-docker run -d --name pgvector \
-  -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=rag \
-  -p 5432:5432 pgvector/pgvector:pg16
+docker run -d --name rag-evaluator-db \
+  -e POSTGRES_PASSWORD=postgres \
+  -p 5433:5432 pgvector/pgvector:pg16
 ```
 
-The indexer creates the `vector` extension automatically on first run.
+The indexer creates the `rag` database and the `vector` extension automatically on first run.
 
 ## Usage
 
@@ -120,17 +145,21 @@ To keep both indexes side by side instead of resetting, give each a different `-
 
 All settings are read from `.env` (see `.env.example`):
 
-| Variable | Default | Used for |
+| Variable | Default (ollama / openai) | Used for |
 |---|---|---|
-| `OPENAI_API_KEY` | — | All model calls |
-| `DATABASE_URL` | `postgresql+psycopg://postgres:postgres@localhost:5432/rag` | pgvector connection |
-| `PGVECTOR_COLLECTION` | `rag_eval` | Collection name for the index |
-| `EMBEDDING_MODEL` | `text-embedding-3-small` | Indexing, retrieval and Ragas embeddings |
-| `GENERATOR_MODEL` | `gpt-4o-mini` | Synthetic test set generation |
-| `RAG_MODEL` | `gpt-4o-mini` | Answering questions (the pipeline under test) |
-| `JUDGE_MODEL` | `gpt-4o` | Scoring with Ragas |
+| `LLM_PROVIDER` | `openai` if unset | Which provider supplies all models |
+| `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama server address |
+| `OPENAI_API_KEY` | — | OpenAI calls (only when `LLM_PROVIDER=openai`) |
+| `DATABASE_URL` | `postgresql+psycopg://postgres:postgres@localhost:5432/rag` | pgvector connection (`.env.example` uses port 5433) |
+| `PGVECTOR_COLLECTION` | `rag_eval_<provider>` | Collection name for the index |
+| `EMBEDDING_MODEL` | `nomic-embed-text` / `text-embedding-3-small` | Indexing, retrieval and Ragas embeddings |
+| `GENERATOR_MODEL` | `qwen2.5:7b` / `gpt-4o-mini` | Synthetic test set generation |
+| `RAG_MODEL` | `qwen2.5:7b` / `gpt-4o-mini` | Answering questions (the pipeline under test) |
+| `JUDGE_MODEL` | `qwen2.5:7b` / `gpt-4o` | Scoring with Ragas |
 
-The judge defaults to a stronger model than the pipeline, so the pipeline isn't grading its own answers.
+With OpenAI, the judge defaults to a stronger model than the pipeline, so the pipeline isn't grading its own answers. With Ollama all three roles share one model to keep memory use down; if your machine can run a larger model, set `JUDGE_MODEL` to it.
+
+Before any model call, each script checks the provider is usable: that the API key is set, or that Ollama is running and the models are pulled (it prints the `ollama pull` commands you need).
 
 ## Project layout
 
@@ -141,6 +170,7 @@ rag-evaluator/
 ├── data/
 │   └── sample_corpus/        # fictional documents for trying the pipeline
 ├── src/
+│   ├── models.py             # provider switch: Ollama or OpenAI models
 │   └── indexer.py            # load, chunk, embed, upsert into pgvector
 └── eval/
     ├── generate_testset.py   # Ragas synthetic QA generation
@@ -154,5 +184,6 @@ rag-evaluator/
 - **Pinned versions.** The code targets the Ragas 0.2/0.3 API and the LangChain 0.3 package family. Keep the pins in `requirements.txt` unless you are migrating.
 - **Two Postgres drivers.** `langchain-postgres` requires psycopg 3 (hence `postgresql+psycopg://`). `psycopg2-binary` is used only to create the `vector` extension.
 - **Fewer samples than requested.** Ragas skips very short documents (roughly under 100 tokens) during test set generation, and incomplete samples are dropped.
-- **Cost.** Every run makes LLM calls for answering and judging each question. Start with `--size 10` while you're setting things up.
+- **Cost and time.** Every run makes LLM calls for answering and judging each question. Start with `--size 10` while you're setting things up. With Ollama, expect test set generation and evaluation to take several minutes each on a laptop.
+- **Small local models and test generation.** If `generate_testset.py` fails partway with output-parsing errors on Ollama, retry with a smaller `--size`, or set `GENERATOR_MODEL` to a larger model if your machine can run one.
 - **`NaN` scores.** A metric can return `NaN` when the judge's output can't be parsed. The counts are reported under `nan_counts` in the summary JSON.
