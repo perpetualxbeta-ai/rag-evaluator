@@ -57,6 +57,18 @@ The indexer creates the `vector` extension automatically on first run.
 
 Put your `.md` and `.txt` files in a directory (e.g. `data/corpus/`), then run the three steps from the repo root.
 
+### Quick start with the sample corpus
+
+`data/sample_corpus/` contains seven short documents about a **fictional** warehouse-robot company (Halcyon Robotics and its Kestrel K2 robot): an overview, technical specs, safety procedures, a maintenance guide, warranty and support terms, firmware release notes, and an FAQ. The facts are invented and cross-referenced between documents (for example, the battery warranty depends on a state-of-health threshold defined in the maintenance guide and only reported from a specific firmware version), so Ragas can generate multi-hop questions and you can check any answer against the source files.
+
+```bash
+python -m src.indexer --data-dir data/sample_corpus --reset
+python eval/generate_testset.py --data-dir data/sample_corpus --size 10
+python eval/evaluate_pipeline.py --k 4
+```
+
+To use your own documents instead, replace `data/sample_corpus` with your directory in the commands below.
+
 **1. Index the corpus**
 
 ```bash
@@ -126,6 +138,8 @@ The judge defaults to a stronger model than the pipeline, so the pipeline isn't 
 rag-evaluator/
 ├── requirements.txt
 ├── .env.example
+├── data/
+│   └── sample_corpus/        # fictional documents for trying the pipeline
 ├── src/
 │   └── indexer.py            # load, chunk, embed, upsert into pgvector
 └── eval/
