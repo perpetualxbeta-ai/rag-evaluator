@@ -33,7 +33,12 @@ from ragas.run_config import RunConfig
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from src.indexer import COLLECTION_NAME, get_embeddings, get_vector_store  # noqa: E402
+from src.indexer import (  # noqa: E402
+    COLLECTION_NAME,
+    get_embeddings,
+    get_vector_store,
+    require_openai_key,
+)
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -55,6 +60,10 @@ RAG_PROMPT = ChatPromptTemplate.from_messages(
 
 
 def load_testset(path: str | Path) -> pd.DataFrame:
+    if not Path(path).is_file():
+        raise SystemExit(
+            f"Test set not found at {path}. Run eval/generate_testset.py first."
+        )
     df = pd.read_json(path, lines=True)
     missing = {"user_input", "reference"} - set(df.columns)
     if missing:
@@ -90,6 +99,7 @@ def evaluate_pipeline(
     max_concurrency: int = 8,
     output_dir: str | Path = ROOT / "eval" / "results",
 ) -> pd.DataFrame:
+    require_openai_key()
     testset = load_testset(testset_path)
     questions = testset["user_input"].tolist()
     logger.info("Running RAG pipeline on %d questions (k=%d, model=%s)", len(questions), k, rag_model)

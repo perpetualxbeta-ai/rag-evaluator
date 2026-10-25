@@ -22,7 +22,7 @@ from ragas.testset import TestsetGenerator
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from src.indexer import EMBEDDING_MODEL, load_documents  # noqa: E402
+from src.indexer import EMBEDDING_MODEL, load_documents, require_openai_key  # noqa: E402
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -39,6 +39,7 @@ def generate_testset(
     embedding_model: str = EMBEDDING_MODEL,
     max_workers: int = 8,
 ) -> pd.DataFrame:
+    require_openai_key()
     # Use full documents, not our chunks: Ragas builds its own knowledge graph
     # and the test set should be independent of the chunking under evaluation.
     docs = load_documents(data_dir)

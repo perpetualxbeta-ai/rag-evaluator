@@ -13,6 +13,9 @@ from pathlib import Path
 from typing import Iterable, Sequence
 
 import psycopg2
+import psycopg2.errors
+import psycopg2.extensions
+import psycopg2.sql
 from dotenv import load_dotenv
 from langchain_community.document_loaders import DirectoryLoader, TextLoader
 from langchain_core.documents import Document
@@ -66,13 +69,57 @@ def _libpq_dsn(url: str) -> str:
     return url
 
 
+def require_openai_key() -> None:
+    """Fail fast with a readable message instead of a deep OpenAI client traceback."""
+    key = os.getenv("OPENAI_API_KEY", "")
+    if not key or key == "sk-...":
+        raise SystemExit(
+            "OPENAI_API_KEY is not set. Copy .env.example to .env in the repo root "
+            "and put your key on the OPENAI_API_KEY line (or export it in your shell)."
+        )
+
+
+def ensure_database(url: str = DATABASE_URL) -> None:
+    """Create the target database if the server is reachable but the database is missing."""
+    dsn = _libpq_dsn(url)
+    try:
+        psycopg2.connect(dsn).close()
+        return
+    except psycopg2.OperationalError as exc:
+        if "does not exist" not in str(exc):
+            raise SystemExit(
+                f"Could not connect to Postgres using DATABASE_URL ({exc}). "
+                "Is the pgvector container running? Check with `docker ps`."
+            ) from exc
+
+    params = psycopg2.extensions.parse_dsn(dsn)
+    db_name = params.pop("dbname")
+    admin = psycopg2.connect(**params, dbname="postgres")
+    try:
+        admin.autocommit = True
+        with admin.cursor() as cur:
+            cur.execute(
+                psycopg2.sql.SQL("CREATE DATABASE {}").format(psycopg2.sql.Identifier(db_name))
+            )
+        logger.info("Created database '%s'.", db_name)
+    finally:
+        admin.close()
+
+
 def ensure_pgvector_extension(url: str = DATABASE_URL) -> None:
-    """Create the `vector` extension if it does not exist yet."""
+    """Create the database and the `vector` extension if they do not exist yet."""
+    ensure_database(url)
     conn = psycopg2.connect(_libpq_dsn(url))
     try:
         conn.autocommit = True
         with conn.cursor() as cur:
-            cur.execute("CREATE EXTENSION IF NOT EXISTS vector;")
+            try:
+                cur.execute("CREATE EXTENSION IF NOT EXISTS vector;")
+            except psycopg2.errors.FeatureNotSupported as exc:
+                raise SystemExit(
+                    "The Postgres server at DATABASE_URL does not have pgvector installed. "
+                    "Point DATABASE_URL at the pgvector/pgvector container instead."
+                ) from exc
         logger.info("pgvector extension is available.")
     finally:
         conn.close()
@@ -148,6 +195,7 @@ def index_documents(
     batch_size: int = 128,
     reset: bool = False,
 ) -> int:
+    require_openai_key()
     ensure_pgvector_extension()
     chunks = chunk_documents(load_documents(data_dir), chunk_size, chunk_overlap)
     if not chunks:
