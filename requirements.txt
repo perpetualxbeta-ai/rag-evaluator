@@ -1,0 +1,19 @@
+# --- Evaluation ---
+ragas>=0.2.15,<0.4
+datasets>=2.19
+pandas>=2.1
+
+# --- LangChain (0.3 family; matches the APIs used in this repo) ---
+langchain>=0.3,<0.4
+langchain-core>=0.3,<0.4
+langchain-community>=0.3,<0.4
+langchain-openai>=0.3,<0.4
+langchain-text-splitters>=0.3,<0.4
+langchain-postgres>=0.0.13,<0.1
+
+# --- Postgres / pgvector ---
+psycopg2-binary>=2.9        # used for DB bootstrap (CREATE EXTENSION vector)
+psycopg[binary]>=3.1        # driver required by langchain-postgres (postgresql+psycopg://)
+
+# --- Utilities ---
+python-dotenv>=1.0
